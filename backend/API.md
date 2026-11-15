@@ -32,6 +32,11 @@ The message endpoint returns `202 Accepted`. The stop endpoint only changes the
 state of an unstarted task; it cannot interrupt browser work because execution
 is not implemented. All other endpoints below describe planned API behavior.
 
+For local development, run `cargo run` from `backend/` and `npm run dev` from
+`frontend/`. The Vite dev server listens on port 5173 and proxies `/api` to the
+backend at `127.0.0.1:3000`. Accepted chat messages are printed in the backend
+terminal.
+
 The backend is divided into six primary API modules:
 
 1. Agent API

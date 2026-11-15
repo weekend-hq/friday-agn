@@ -178,6 +178,10 @@ async fn receive_message(
         status: TaskStatus::Received,
         created_at: Utc::now(),
     };
+    println!(
+        "[agent.message] session_id={} task_id={} message={:?}",
+        task.session_id, task.task_id, task.message
+    );
     state.tasks.write().await.insert(task.task_id, task.clone());
 
     (
