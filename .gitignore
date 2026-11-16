@@ -3,7 +3,7 @@
 **/target/
 
 # model
-/model/qwen38b.safetensors
+/model
 
 # Node
 node_modules/
