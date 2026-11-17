@@ -24,7 +24,7 @@ const App: Component = () => {
       id: crypto.randomUUID(),
       role: 'assistant',
       content:
-        'Hi! Send me a browser task and I’ll pass it to the FRIDAY-AGN backend.',
+        'Hi! I’m FRIDAY-AGN. Send me a message and I’ll ask the local model to help.',
     },
   ]);
   const [draft, setDraft] = createSignal('');
@@ -182,8 +182,8 @@ const App: Component = () => {
             </button>
           </div>
           <p class="mt-3 text-xs text-slate-500">
-            Messages are sent to the backend and printed in its terminal. The
-            agent does not execute browser tasks yet.
+                Messages go through the backend to your local Ollama model. Browser
+                actions are not connected yet.
           </p>
         </form>
       </section>

@@ -1,3 +1,6 @@
+mod ollama;
+pub use ollama::OllamaClient;
+
 use std::{collections::HashMap, sync::Arc};
 
 use axum::{
@@ -15,16 +18,18 @@ use uuid::Uuid;
 const MAX_MESSAGE_LENGTH: usize = 10_000;
 const MAX_SESSION_ID_LENGTH: usize = 128;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct AppState {
     tasks: Arc<RwLock<HashMap<Uuid, Task>>>,
+    ollama: OllamaClient,
 }
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum TaskStatus {
-    Received,
-    Stopped,
+    Processing,
+    Completed,
+    Failed,
 }
 
 #[derive(Clone, Serialize)]
@@ -33,6 +38,7 @@ struct Task {
     message_id: Uuid,
     session_id: String,
     message: String,
+    response: Option<String>,
     status: TaskStatus,
     created_at: DateTime<Utc>,
 }
@@ -77,11 +83,7 @@ impl<T> ApiResponse<T> {
     }
 }
 
-pub fn app() -> Router {
-    app_with_state(AppState::default())
-}
-
-pub fn app_with_state(state: AppState) -> Router {
+pub fn app(ollama: OllamaClient) -> Router {
     Router::new()
         .route("/api/v1/system/health", get(health))
         .route("/api/v1/agent/status", get(agent_status))
@@ -90,7 +92,10 @@ pub fn app_with_state(state: AppState) -> Router {
         .route("/api/v1/agent/tasks/{task_id}", get(get_task))
         .route("/api/v1/agent/stop", post(stop_task))
         .fallback(not_found)
-        .with_state(state)
+        .with_state(AppState {
+            tasks: Arc::default(),
+            ollama,
+        })
 }
 
 async fn health() -> impl IntoResponse {
@@ -109,7 +114,7 @@ async fn agent_status() -> impl IntoResponse {
         Json(ApiResponse::success(serde_json::json!({
             "status": "idle",
             "active_execution_id": null,
-            "llm_status": "not_configured",
+            "llm_status": "configured",
             "browser_status": "not_configured"
         }))),
     )
@@ -175,8 +180,37 @@ async fn receive_message(
         message_id: Uuid::new_v4(),
         session_id,
         message: message.to_owned(),
-        status: TaskStatus::Received,
+        response: None,
+        status: TaskStatus::Processing,
         created_at: Utc::now(),
+    };
+    let history = {
+        let tasks = state.tasks.read().await;
+        let mut previous_turns: Vec<_> = tasks
+            .values()
+            .filter(|previous| {
+                previous.session_id == task.session_id
+                    && matches!(previous.status, TaskStatus::Completed)
+                    && previous.response.is_some()
+            })
+            .collect();
+        previous_turns.sort_by_key(|previous| previous.created_at);
+        previous_turns
+            .into_iter()
+            .rev()
+            .take(10)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .flat_map(|previous| {
+                let response = previous.response.as_ref()?;
+                Some([
+                    ("user".to_owned(), previous.message.clone()),
+                    ("assistant".to_owned(), response.clone()),
+                ])
+            })
+            .flatten()
+            .collect::<Vec<_>>()
     };
     println!(
         "[agent.message] session_id={} task_id={} message={:?}",
@@ -184,17 +218,40 @@ async fn receive_message(
     );
     state.tasks.write().await.insert(task.task_id, task.clone());
 
-    (
-        StatusCode::ACCEPTED,
-        Json(ApiResponse::success(serde_json::json!({
-            "task_id": task.task_id,
-            "message_id": task.message_id,
-            "session_id": task.session_id,
-            "status": task.status,
-            "message": "Task received. Planning and browser execution are not connected yet."
-        }))),
-    )
-        .into_response()
+    match state.ollama.generate(&task.message, &history).await {
+        Ok(response) => {
+            if let Some(stored_task) = state.tasks.write().await.get_mut(&task.task_id) {
+                stored_task.response = Some(response.clone());
+                stored_task.status = TaskStatus::Completed;
+            }
+
+            (
+                StatusCode::OK,
+                Json(ApiResponse::success(serde_json::json!({
+                    "task_id": task.task_id,
+                    "message_id": task.message_id,
+                    "session_id": task.session_id,
+                    "status": TaskStatus::Completed,
+                    "message": response
+                }))),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            eprintln!("[ollama.error] task_id={} error={error}", task.task_id);
+            if let Some(stored_task) = state.tasks.write().await.get_mut(&task.task_id) {
+                stored_task.status = TaskStatus::Failed;
+            }
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiResponse::<()>::failure(
+                    "OLLAMA_UNAVAILABLE",
+                    "Could not get a response from Ollama. Check that Ollama is running and the configured model is available.",
+                )),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn get_task(State(state): State<AppState>, Path(task_id): Path<String>) -> impl IntoResponse {
@@ -248,24 +305,12 @@ async fn stop_task(
         }
     };
 
-    let mut tasks = state.tasks.write().await;
-    match tasks.get_mut(&task_id) {
-        Some(task) if matches!(task.status, TaskStatus::Received) => {
-            task.status = TaskStatus::Stopped;
-            (
-                StatusCode::OK,
-                Json(ApiResponse::success(serde_json::json!({
-                    "task_id": task_id,
-                    "status": task.status
-                }))),
-            )
-                .into_response()
-        }
+    match state.tasks.read().await.get(&task_id) {
         Some(_) => (
             StatusCode::CONFLICT,
             Json(ApiResponse::<()>::failure(
                 "TASK_NOT_STOPPABLE",
-                "Only a task that has not started can be stopped by this API.",
+                "Model requests cannot currently be interrupted.",
             )),
         )
             .into_response(),

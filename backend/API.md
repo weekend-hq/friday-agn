@@ -15,8 +15,8 @@ Friday AGN is an autonomous browser agent that receives natural-language instruc
 
 ## Current implementation
 
-The Rust backend currently provides an API foundation only; planning, LLM calls,
-browser control, persistence, and background execution are not implemented yet.
+The Rust backend connects chat requests to a local Ollama server. Browser
+control, persistent storage, and background execution are not implemented yet.
 Tasks are kept in process memory and are lost when the server restarts.
 
 Implemented endpoints:
@@ -24,18 +24,20 @@ Implemented endpoints:
 - `GET /api/v1/system/health`
 - `GET /api/v1/agent/status`
 - `GET /api/v1/agent/capabilities`
-- `POST /api/v1/agent/message` — accepts and stores a task; it does not execute it
+- `POST /api/v1/agent/message` — sends a message and recent session history to Ollama and returns the model response
 - `GET /api/v1/agent/tasks/{task_id}` — retrieves an accepted task
 - `POST /api/v1/agent/stop` with `{"task_id":"<uuid>"}` — stops a task that has not started
 
-The message endpoint returns `202 Accepted`. The stop endpoint only changes the
-state of an unstarted task; it cannot interrupt browser work because execution
-is not implemented. All other endpoints below describe planned API behavior.
+The message endpoint waits for the model and returns `200 OK`. It returns
+`503 Service Unavailable` if Ollama cannot respond. The stop endpoint cannot
+interrupt an in-progress model request. All other endpoints below describe
+planned API behavior.
 
 For local development, run `cargo run` from `backend/` and `npm run dev` from
 `frontend/`. The Vite dev server listens on port 5173 and proxies `/api` to the
-backend at `127.0.0.1:3000`. Accepted chat messages are printed in the backend
-terminal.
+backend at `127.0.0.1:3000`. By default the backend calls
+`http://localhost:11434` using model `qwen3:8b`. Set `OLLAMA_BASE_URL` and
+`OLLAMA_MODEL` to override these values.
 
 The backend is divided into six primary API modules:
 
